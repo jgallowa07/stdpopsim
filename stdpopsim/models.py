@@ -6,6 +6,7 @@ import inspect
 
 import msprime
 import numpy as np
+import math
 
 
 # Defaults taken from np.allclose
@@ -121,6 +122,8 @@ class Model(object):
         self.demographic_events = []
         # Defaults to a single population
         self.migration_matrix = [[0]]
+        #self.ddb = msprime.DemographyDebugger(**self.asdict())
+        #self.epochs = self.ddb.epochs
 
     def debug(self, out_file=sys.stdout):
         # Use the demography debugger to print out the demographic history
@@ -137,6 +140,42 @@ class Model(object):
             "migration_matrix": self.migration_matrix,
             "demographic_events": self.demographic_events}
 
+    def get_epoch_at_t(self,t):
+        """
+        Given a time, t (in generations), find and return the 
+        The Epoch for which this belongs.
+        If there is no epoch that exists for the given t 
+        then it returns None.
+
+        <class 'int'> -> <class 'msprime.simulations.Epoch'>
+        """
+        # lets set these as class variables that get 
+        # set in the initialization of a subclass.
+        ddb = msprime.DemographyDebugger(**self.asdict())
+        epochs = ddb.epochs
+        for epoch in epochs:
+            if (epoch.start_time <= t) & (epoch.end_time > t):
+                return epoch 
+        return None
+
+    def get_N_M_at_t(self,t):
+        """
+        Given a time, t (in generations), find and return 
+        1: the vector N which should represent effective population size
+        for each populations at time t and,
+        2: The migration matrix for for the populations at time t
+        
+        <class 'int'> -> <class 'list'>, <class 'list'>
+        """
+        
+        epoch = self.get_epoch_at_t(t)
+        N = []
+        for i,pop in enumerate(epoch.populations):
+            s = t - epoch.start_time
+            g = pop.growth_rate
+            N.append(math.exp(-1 * g * s) * pop.start_size)         
+        return N, epoch.migration_matrix
+        
     def equals(self, other, rtol=DEFAULT_RTOL, atol=DEFAULT_ATOL):
         """
         Returns True if this model is equal to the specified model to the
