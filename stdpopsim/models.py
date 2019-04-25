@@ -6,8 +6,7 @@ import inspect
 
 import msprime
 import numpy as np
-import math
-
+import copy
 
 # Defaults taken from np.allclose
 DEFAULT_ATOL = 1e-05
@@ -140,7 +139,90 @@ class Model(object):
             "migration_matrix": self.migration_matrix,
             "demographic_events": self.demographic_events}
 
-    def get_epoch_at_t(self,t):
+
+# ###############################################################
+# UNDER CONSTRUCTION - GROUND TRUTH N_t
+# ###############################################################
+        
+    def num_pops(self):
+        """
+        This function returns the number populations
+        defined by the demographic model
+        """
+        ddb = msprime.DemographyDebugger(**self.asdict())
+        return len(ddb.epochs[0].populations)
+        
+
+    # TODO Rename
+    def get_Ne_through_time_single_pop(self, end, start = 0, num_steps = 10):
+        """
+        This function returns the defined Ne for each individual
+        sub population for any demographic model.
+    
+        parameter `end` specifies at which generation to stop 
+        collecting effective population sizes among subpopulations
+
+        `num_steps` parameter will determine how many points between 
+        `start` and `end` to sample.
+        
+        This function will return a numpy ndarray that will contain the effective
+        population sizes for each subpopulation individually across time.        
+        """
+        
+        ddb = msprime.DemographyDebugger(**self.asdict())
+        num_pops = self.num_pops()
+        epoch_times = ddb.epoch_times()
+        N_t = np.zeros([num_steps,num_pops])
+        steps = np.linspace(start, end, num_steps)
+        for j,t in enumerate(steps):
+            N = self.get_N_M_at_t(t)["population_sizes"]
+            N_t[j] = N
+    
+        return N_t
+
+    # TODO Rename
+    def get_Ne_through_time_all_pops(self, end, num_samples_per_location, num_steps = 10):
+        """
+        This function will calculate the true Ne for a population with
+        multiple sub-populations. This is a function that takes a 
+        demographic model and returns a
+        function of time that gives inverse coalescence rate.
+        
+        num_samples_per_location should be a list containing the
+        number of samples in each subpopulation organized by population index.
+
+        num_steps parameter will determine how many points along the 
+        time axis are returnes.
+        """
+
+        ddb = msprime.DemographyDebugger(**self.asdict())
+        num_pops = self.num_pops()
+        assert(len(num_samples_per_location) == num_pops)
+        P = np.zeros([num_pops**2,num_pops**2])
+        index_array = np.array(range(num_pops**2)).reshape([num_pops,num_pops])
+        for x in range(num_pops):
+            for y in range(num_pops):
+                K_x = num_samples_per_location[x]
+                K_y = num_samples_per_location[y]
+                P[index_array[x,y],index_array[x,y]] = K_x * (K_y - self._delta(x,y))
+        P = P / np.sum(P)
+        r = np.zeros(num_steps)
+        steps = np.linspace(0, end, num_steps)
+        dt = steps[1] - steps[0]
+        for j in range(num_steps):
+            N_M = self._get_N_M_at_t(steps[j])
+            pop_sizes = N_M["population_sizes"]
+            mig_matrix = N_M["migration_matrix"]
+            C = self._get_C_from_N(pop_sizes)
+            Mp = self._get_Mp_from_M(mig_matrix)
+            G = self._get_G_from_Mp_C(Mp, C)
+            P = P * np.exp(dt * G)
+            r[j] = np.sum(np.matmul(P,C)) / np.sum(P)
+                
+        return r
+
+    # TODO Rename
+    def _get_epoch_at_t(self, t):
         """
         Given a time, t (in generations), find and return the 
         The Epoch for which this belongs.
@@ -153,28 +235,85 @@ class Model(object):
         # set in the initialization of a subclass.
         ddb = msprime.DemographyDebugger(**self.asdict())
         epochs = ddb.epochs
-        for epoch in epochs:
-            if (epoch.start_time <= t) & (epoch.end_time > t):
-                return epoch 
-        return None
+        j = 0
+        while epochs[j].end_time <= t:
+            j += 1
+        return j, epochs[j]
 
-    def get_N_M_at_t(self,t):
+    # TODO Rename
+    def _get_N_M_at_t(self, t):
         """
         Given a time, t (in generations), find and return 
-        1: the vector N which should represent effective population size
+        a dictionary containing:
+        1: "population_sizes" the vector N which should represent effective population size
         for each populations at time t and,
-        2: The migration matrix for for the populations at time t
+        2: "migration_matrix" The migration matrix for for the populations at time t
         
-        <class 'int'> -> <class 'list'>, <class 'list'>
+        <class 'int'> -> <class 'dict'>
         """
-        
-        epoch = self.get_epoch_at_t(t)
-        N = []
+    
+        epochIndex, epoch = self._get_epoch_at_t(t)
+        ddb = msprime.DemographyDebugger(**self.asdict())
+
+        #N = [pop.start_size for pop in epoch.populations]
+        N = ddb.population_size_history[:, epochIndex]
+             
         for i,pop in enumerate(epoch.populations):
             s = t - epoch.start_time
             g = pop.growth_rate
-            N.append(math.exp(-1 * g * s) * pop.start_size)         
-        return N, epoch.migration_matrix
+            N[i] *= np.exp(-1 * g * s)
+
+        return {"population_sizes":N, "migration_matrix":epoch.migration_matrix}
+
+    def _delta(self, x, y):
+        if x == y:
+            return 1
+        else:
+            return 0
+    
+    # TODO Rename
+    def _get_C_from_N(self, N):
+        """
+        Compute the matrix C, which reprents coalescent probabilities
+        in each population, from Individual effective population sizes.
+        """
+        
+        n = len(N)
+        C = np.zeros([n**2,n**2])
+        index_array = np.array(range(n**2)).reshape([n,n])
+        for idx in range(n):
+            C[index_array[idx,idx],index_array[idx,idx]] = 1 / (2 * N[idx])
+
+        return C
+
+    # TODO Rename
+    def _get_G_from_Mp_C(self, Mp, C):
+        """
+        ????
+        """
+        I = np.eye(len(Mp[0]))
+        G = (np.kron(Mp,I) + np.kron(I,Mp)) - C
+
+        return G
+
+    # TODO Rename
+    def _get_Mp_from_M(self, M):
+        """
+        Simply compute Mp. which represents the **,
+        From the migration matrix.
+        """
+        
+        Mp = copy.deepcopy(M)
+        for idx,row in enumerate(M):
+            Mp[idx][idx] = -1 * sum(row)
+
+        return Mp
+
+
+# ###############################################################
+# END CONSTRUCTION - GROUND TRUTH N_t
+# ###############################################################
+
         
     def equals(self, other, rtol=DEFAULT_RTOL, atol=DEFAULT_ATOL):
         """
