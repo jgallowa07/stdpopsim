@@ -7,6 +7,7 @@ import inspect
 import msprime
 import numpy as np
 import scipy.linalg
+import pdb
 
 # Defaults taken from np.allclose
 DEFAULT_ATOL = 1e-05
